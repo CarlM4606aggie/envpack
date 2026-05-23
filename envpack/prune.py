@@ -58,8 +58,12 @@ def prune_snapshots(
     # Lexicographic sort — ISO-8601 timestamps sort chronologically.
     sorted_snapshots = sorted(all_snapshots)
 
+    # When there are fewer snapshots than the keep limit, nothing is removed.
+    if len(sorted_snapshots) <= keep:
+        return PruneResult(kept=sorted_snapshots, removed=[])
+
     to_keep = sorted_snapshots[-keep:]
-    to_remove = sorted_snapshots[:-keep] if len(sorted_snapshots) > keep else []
+    to_remove = sorted_snapshots[:-keep]
 
     for name in to_remove:
         try:
