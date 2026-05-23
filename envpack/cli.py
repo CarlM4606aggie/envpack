@@ -1,94 +1,84 @@
-"""Command-line interface for envpack snapshot commands."""
+"""Entry-point CLI for envpack."""
 
-import sys
-import getpass
-from pathlib import Path
+from __future__ import annotations
 
 import click
 
-from envpack.store import GitStore, StoreError
+from envpack.cli_config import config_group
+from envpack.cli_profile import profile_group
+from envpack.config import Config, ConfigError
 from envpack.snapshot import SnapshotManager
+from envpack.store import GitStore
 
 
-def _get_manager(store_dir: str | None) -> SnapshotManager:
-    store = GitStore(store_dir=Path(store_dir) if store_dir else None)
-    return SnapshotManager(store=store)
+def _get_manager() -> SnapshotManager:
+    """Build a SnapshotManager from the current config."""
+    cfg = Config.load()
+    store = GitStore(cfg.store_path)
+    return SnapshotManager(store=store, profile=cfg.profile)
 
 
 @click.group()
+@click.version_option()
 def cli() -> None:
     """envpack — snapshot, encrypt, and sync .env files."""
 
 
 @cli.command()
-@click.option("--store", default=None, help="Path to the envpack store directory.")
-def init(store: str | None) -> None:
-    """Initialize the envpack Git store."""
+def init() -> None:
+    """Initialise the envpack Git store."""
+    cfg = Config.load()
+    store = GitStore(cfg.store_path)
     try:
-        GitStore(store_dir=Path(store) if store else None).init()
-        click.echo("Store initialized.")
-    except StoreError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        store.init()
+        click.echo(f"Store initialised at {cfg.store_path}")
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command()
-@click.argument("name")
-@click.option("--file", "env_file", default=".env", show_default=True)
-@click.option("--store", default=None)
-def push(name: str, env_file: str, store: str | None) -> None:
-    """Encrypt and push a .env file to the store."""
-    password = getpass.getpass("Password: ")
+@click.argument("env_file", default=".env", type=click.Path(exists=True))
+@click.password_option("--password", "-p", help="Encryption password.")
+@click.option("--message", "-m", default="", help="Optional commit message.")
+def push(env_file: str, password: str, message: str) -> None:
+    """Encrypt and push ENV_FILE to the store."""
+    manager = _get_manager()
     try:
-        _get_manager(store).push(Path(env_file), name, password)
-        click.echo(f"Snapshot '{name}' saved.")
-    except (StoreError, FileNotFoundError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        snapshot_id = manager.push(
+            env_path=env_file,
+            password=password,
+            message=message or None,
+        )
+        click.echo(f"Snapshot {snapshot_id!r} pushed.")
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command()
-@click.argument("name")
-@click.option("--out", default=".env", show_default=True)
-@click.option("--store", default=None)
-def pull(name: str, out: str, store: str | None) -> None:
-    """Decrypt and pull a snapshot from the store."""
-    password = getpass.getpass("Password: ")
+@click.argument("snapshot_id")
+@click.argument("dest", default=".env", type=click.Path())
+@click.option("--password", "-p", prompt=True, hide_input=True, help="Decryption password.")
+def pull(snapshot_id: str, dest: str, password: str) -> None:
+    """Decrypt and restore SNAPSHOT_ID to DEST."""
+    manager = _get_manager()
     try:
-        _get_manager(store).pull(name, password, Path(out))
-        click.echo(f"Snapshot '{name}' written to {out}.")
-    except (StoreError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+        manager.pull(snapshot_id=snapshot_id, dest_path=dest, password=password)
+        click.echo(f"Snapshot {snapshot_id!r} restored to {dest!r}.")
+    except Exception as exc:  # noqa: BLE001
+        raise click.ClickException(str(exc)) from exc
 
 
 @cli.command(name="list")
-@click.option("--store", default=None)
-def list_cmd(store: str | None) -> None:
-    """List all stored snapshots."""
-    try:
-        names = _get_manager(store).list_snapshots()
-        if names:
-            click.echo("\n".join(names))
-        else:
-            click.echo("No snapshots found.")
-    except StoreError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
+def list_snapshots() -> None:
+    """List all snapshots for the active profile."""
+    manager = _get_manager()
+    snapshots = manager.list_snapshots()
+    if not snapshots:
+        click.echo("No snapshots found.")
+        return
+    for snap in snapshots:
+        click.echo(f"  {snap}")
 
 
-@cli.command()
-@click.argument("name")
-@click.option("--store", default=None)
-def delete(name: str, store: str | None) -> None:
-    """Delete a snapshot from the store."""
-    try:
-        _get_manager(store).delete(name)
-        click.echo(f"Snapshot '{name}' deleted.")
-    except StoreError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    cli()
+cli.add_command(config_group)
+cli.add_command(profile_group)
